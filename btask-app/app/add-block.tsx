@@ -18,6 +18,12 @@ const C = {
   green:   '#3DD68C',
 };
 
+const EMOJIS = [
+  '📋','💪','💼','📚','🎯','🏃','💧','🧘','🎨','🎸',
+  '💻','📝','🏠','🛒','🧹','🍳','📖','🎓','🏋️','⚡',
+  '🌱','❤️','🐱','🐶','🔧','📊','🎮','✈️','💰','🧠',
+];
+
 export default function AddBlockScreen() {
   const router = useRouter();
   const { addBlock, userPresets, addUserPreset } = useBlocks();
@@ -25,6 +31,7 @@ export default function AddBlockScreen() {
   const [name, setName] = useState('');
   const [icon, setIcon] = useState('📋');
   const [type, setType] = useState<'simple' | 'kanban'>('simple');
+  const [emojiOpen, setEmojiOpen] = useState(false);
 
   const allPresets = [...DEFAULT_PRESETS, ...userPresets];
 
@@ -67,13 +74,13 @@ export default function AddBlockScreen() {
         >
           {/* Emoji + Name */}
           <View style={S.nameRow}>
-            <TextInput
-              value={icon}
-              onChangeText={(t) => { if (t) setIcon(t.slice(-2)); }}
-              style={S.iconInput}
-              maxLength={2}
-              textAlign="center"
-            />
+            <TouchableOpacity
+              style={S.iconBtn}
+              onPress={() => setEmojiOpen((v) => !v)}
+              activeOpacity={0.7}
+            >
+              <Text style={{ fontSize: 24 }}>{icon}</Text>
+            </TouchableOpacity>
             <TextInput
               value={name}
               onChangeText={setName}
@@ -85,6 +92,19 @@ export default function AddBlockScreen() {
               onSubmitEditing={handleAdd}
             />
           </View>
+          {emojiOpen && (
+            <View style={S.emojiGrid}>
+              {EMOJIS.map((e) => (
+                <TouchableOpacity
+                  key={e}
+                  onPress={() => { setIcon(e); setEmojiOpen(false); }}
+                  style={[S.emojiCell, icon === e && S.emojiCellActive]}
+                >
+                  <Text style={{ fontSize: 22 }}>{e}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
 
           {/* Type */}
           <Text style={S.sectionLabel}>Type</Text>
@@ -193,10 +213,23 @@ const S = StyleSheet.create({
   content: { padding: 20, paddingBottom: 8 },
 
   nameRow: { flexDirection: 'row', gap: 10, marginBottom: 28 },
-  iconInput: {
+  iconBtn: {
     width: 52, height: 52, borderRadius: 12,
     backgroundColor: C.card2, borderWidth: 1, borderColor: C.border,
-    fontSize: 24, color: C.text, textAlign: 'center',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  emojiGrid: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 4,
+    marginTop: -18, marginBottom: 20,
+    padding: 10, borderRadius: 14,
+    backgroundColor: C.card, borderWidth: 1, borderColor: C.border,
+  },
+  emojiCell: {
+    width: 44, height: 44, borderRadius: 10,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  emojiCellActive: {
+    backgroundColor: C.card2, borderWidth: 1, borderColor: C.green,
   },
   nameInput: {
     flex: 1, height: 52, backgroundColor: C.card2,

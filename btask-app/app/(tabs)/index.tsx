@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import {
   View,
   Text,
@@ -12,8 +12,10 @@ import {
   TextInput,
   PanResponder,
   Animated,
+  Easing,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -26,6 +28,7 @@ import {
   Weight,
   isBlockDone,
 } from "@/store/blocks";
+import { Image } from "expo-image";
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 
@@ -42,6 +45,9 @@ const C = {
 
 const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get("window");
 const W = { high: 3, medium: 2, low: 1 };
+const PANEL_W = SCREEN_WIDTH - 56; // hero paddingHorizontal 28*2
+const NUM_PANELS = 9;
+const CENTER = 4; // today is always at index 4
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
 
@@ -81,7 +87,18 @@ function sortReminders(reminders: Reminder[]): Reminder[] {
   });
 }
 
+// ─── Cat GIF ──────────────────────────────────────────────────────────────────
+
+const catGif = require("@/assets/gif/cats-transparent.gif");
+
 // ─── Hero ─────────────────────────────────────────────────────────────────────
+
+function panelOpacity(dist: number) {
+  if (dist === 0) return 1;
+  if (dist === 1) return 0.22;
+  if (dist === 2) return 0.1;
+  return 0.04;
+}
 
 function Hero({
   dayOffset,
@@ -90,6 +107,8 @@ function Hero({
   blocks,
   reminders,
   onOpenCalendar,
+  onSwipeStart,
+  onSwipeEnd,
 }: {
   dayOffset: number;
   onPrev: () => void;
@@ -97,48 +116,63 @@ function Hero({
   blocks: Block[];
   reminders: Reminder[];
   onOpenCalendar: () => void;
+  onSwipeStart: () => void;
+  onSwipeEnd: () => void;
 }) {
   const isToday = dayOffset === 0;
   const isFuture = dayOffset > 0;
 
-  // Smooth horizontal swipe to change day
-  const slideX = useRef(new Animated.Value(0)).current;
+  // 9-panel carousel: today always at index CENTER
+  const carouselX = useRef(new Animated.Value(-PANEL_W * CENTER)).current;
   const onPrevRef = useRef(onPrev);
   const onNextRef = useRef(onNext);
+  const onSwipeStartRef = useRef(onSwipeStart);
+  const onSwipeEndRef = useRef(onSwipeEnd);
   onPrevRef.current = onPrev;
   onNextRef.current = onNext;
+  onSwipeStartRef.current = onSwipeStart;
+  onSwipeEndRef.current = onSwipeEnd;
 
-  const swipe = useRef(
+  const pan = useRef(
     PanResponder.create({
+      // Only claim clearly horizontal swipes — let vertical ones pass through
       onMoveShouldSetPanResponder: (_, gs) =>
-        Math.abs(gs.dx) > 6 && Math.abs(gs.dx) > Math.abs(gs.dy) * 1.8,
+        Math.abs(gs.dx) > 10 && Math.abs(gs.dx) > Math.abs(gs.dy) * 1.5,
+      onPanResponderGrant: () => {
+        // Immediately kill outer vertical scroll so diagonal swipes stay in hero
+        onSwipeStartRef.current();
+      },
       onPanResponderMove: (_, gs) => {
-        slideX.setValue(gs.dx * 0.65);
+        carouselX.setValue(-PANEL_W * CENTER + gs.dx);
       },
       onPanResponderRelease: (_, gs) => {
-        const spring = (v = 0) =>
-          Animated.spring(slideX, {
-            toValue: v,
+        onSwipeEndRef.current();
+        const snapTo = (toValue: number, cb: () => void) => {
+          Animated.timing(carouselX, {
+            toValue,
+            duration: 220,
+            easing: Easing.out(Easing.cubic),
             useNativeDriver: true,
-            damping: 18,
-            stiffness: 450,
-            mass: 0.65,
-          }).start();
-        if (gs.dx < -28 || gs.vx < -0.3) {
-          onNextRef.current();
-          spring();
-        } else if (gs.dx > 28 || gs.vx > 0.3) {
-          onPrevRef.current();
-          spring();
-        } else spring();
+          }).start(() => {
+            cb();
+            carouselX.setValue(-PANEL_W * CENTER);
+          });
+        };
+        // Any movement in a direction commits — no bounce back
+        if (gs.dx < 0)
+          snapTo(-PANEL_W * (CENTER + 1), () => onNextRef.current());
+        else if (gs.dx > 0)
+          snapTo(-PANEL_W * (CENTER - 1), () => onPrevRef.current());
+        else carouselX.setValue(-PANEL_W * CENTER);
       },
       onPanResponderTerminate: () => {
-        Animated.spring(slideX, { toValue: 0, useNativeDriver: true }).start();
+        onSwipeEndRef.current();
+        carouselX.setValue(-PANEL_W * CENTER);
       },
     }),
   ).current;
 
-  // Stats for today
+  // Stats
   const { total, done } = useMemo(() => {
     let total = 0,
       done = 0;
@@ -157,18 +191,10 @@ function Hero({
   }, [blocks, reminders]);
 
   const pct = total > 0 ? done / total : 0;
-  const yesterdayPct = 0.3;
   const remaining = total - done;
-
-  const productivityWord =
-    pct > yesterdayPct + 0.08
-      ? "more"
-      : pct < yesterdayPct - 0.08
-        ? "less"
-        : "as";
+  const productivityWord = pct > 0.38 ? "more" : pct < 0.22 ? "less" : "as";
   const productivityColor = productivityWord === "more" ? C.green : C.text;
 
-  // Top reminder across all items for this day
   const topItem = [
     ...blocks
       .filter((b) => !isBlockDone(b) && b.tasks.length > 0)
@@ -178,9 +204,11 @@ function Hero({
       .map((r) => ({ label: r.text, weight: r.weight })),
   ].sort((a, b) => W[b.weight] - W[a.weight])[0];
 
+  const panels = Array.from({ length: NUM_PANELS }, (_, i) => i - CENTER);
+
   return (
-    <View style={S.hero} {...swipe.panHandlers}>
-      {/* Date navigation — stays fixed while content slides */}
+    <View style={S.hero} {...pan.panHandlers}>
+      {/* Fixed top: date nav */}
       <View style={S.dateRow}>
         <TouchableOpacity onPress={onPrev} hitSlop={16} style={S.dateArrow}>
           <Ionicons name="chevron-back" size={14} color={C.textSec} />
@@ -203,85 +231,149 @@ function Hero({
         </View>
       </View>
 
-      {/* Center content — slides on day change */}
-      <Animated.View
-        style={[S.heroCenter, { transform: [{ translateX: slideX }] }]}
-      >
-        {isToday ? (
-          <>
-            <Text style={S.heroName}>Hi Brandon.</Text>
-            <Text style={S.heroStatus}>
-              You are{" "}
-              <Text style={[S.heroStatusBold, { color: productivityColor }]}>
-                {productivityWord} productive
-              </Text>
-              {"\n"}than yesterday.
-            </Text>
-            <View style={S.progressTrack}>
-              <View
-                style={[
-                  S.progressFill,
-                  { width: `${Math.round(pct * 100)}%` as any },
-                ]}
-              />
-            </View>
-            {remaining > 0 ? (
-              <Text style={S.heroMeta}>
-                {remaining} left
-                {topItem ? (
-                  <Text style={S.heroMetaDim}>
-                    {"  ·  "}
-                    {topItem.label}
-                  </Text>
-                ) : null}
-              </Text>
-            ) : (
-              <Text style={[S.heroMeta, { color: C.green }]}>
-                All done today.
-              </Text>
-            )}
-          </>
-        ) : isFuture ? (
-          <>
-            <Text style={S.heroName}>Planning.</Text>
-            <Text style={S.heroStatus}>
-              {reminders.length === 0
-                ? "Nothing planned yet."
-                : `${reminders.length} item${reminders.length !== 1 ? "s" : ""} planned.`}
-            </Text>
-            <View style={S.progressTrack}>
-              <View
-                style={[
-                  S.progressFill,
-                  { width: reminders.length > 0 ? "15%" : "0%" },
-                ]}
-              />
-            </View>
-            <Text style={S.heroMeta}>
-              Add reminders below to plan your day.
-            </Text>
-          </>
-        ) : (
-          <>
-            <Text style={S.heroName}>Looking back.</Text>
-            <Text style={S.heroStatus}>
-              {done > 0
-                ? `Completed ${done} of ${total} items.`
-                : "No activity recorded."}
-            </Text>
-            <View style={S.progressTrack}>
-              <View
-                style={[
-                  S.progressFill,
-                  { width: `${Math.round(pct * 100)}%` as any, opacity: 0.5 },
-                ]}
-              />
-            </View>
-            <Text style={S.heroMeta} />
-          </>
-        )}
-      </Animated.View>
+      {/* 9-panel carousel */}
+      <View style={{ flex: 1, overflow: "hidden" }}>
+        <Animated.View
+          style={{
+            flexDirection: "row",
+            width: PANEL_W * NUM_PANELS,
+            flex: 1,
+            transform: [{ translateX: carouselX }],
+          }}
+        >
+          {panels.map((offset) => {
+            const dist = Math.abs(offset);
+            const isCurrent = offset === 0;
+            const panelDayOffset = dayOffset + offset;
 
+            if (!isCurrent) {
+              return (
+                <View
+                  key={offset}
+                  style={{
+                    width: PANEL_W,
+                    justifyContent: "center",
+                    gap: 24,
+                    opacity: panelOpacity(dist),
+                  }}
+                >
+                  <Text style={S.heroName}>{dayLabel(panelDayOffset)}.</Text>
+                  <View style={S.progressTrack}>
+                    <View
+                      style={[
+                        S.progressFill,
+                        { width: panelDayOffset > 0 ? "10%" : "55%" },
+                      ]}
+                    />
+                  </View>
+                  <Text style={S.heroMeta}> </Text>
+                </View>
+              );
+            }
+
+            return (
+              <View
+                key={offset}
+                style={{ width: PANEL_W, justifyContent: "center", gap: 32 }}
+              >
+                {isToday ? (
+                  <>
+                    <Image
+                      source={catGif}
+                      style={{
+                        position: "absolute",
+                        top: "50%",
+                        right: -10,
+                        marginTop: -60,
+                        width: PANEL_W / 2,
+                        height: 120,
+                      }}
+                      contentFit="contain"
+                      autoplay
+                    />
+                    <Text style={S.heroName}>Hi Brandon.</Text>
+                    <Text style={S.heroStatus}>
+                      You are{" "}
+                      <Text
+                        style={[S.heroStatusBold, { color: productivityColor }]}
+                      >
+                        {productivityWord} productive
+                      </Text>
+                      {"\n"}than yesterday.
+                    </Text>
+                    <View style={S.progressTrack}>
+                      <View
+                        style={[
+                          S.progressFill,
+                          { width: `${Math.round(pct * 100)}%` as any },
+                        ]}
+                      />
+                    </View>
+                    {remaining > 0 ? (
+                      <Text style={S.heroMeta}>
+                        {remaining} left
+                        {topItem ? (
+                          <Text style={S.heroMetaDim}>
+                            {"  ·  "}
+                            {topItem.label}
+                          </Text>
+                        ) : null}
+                      </Text>
+                    ) : (
+                      <Text style={[S.heroMeta, { color: C.green }]}>
+                        All done today.
+                      </Text>
+                    )}
+                  </>
+                ) : isFuture ? (
+                  <>
+                    <Text style={S.heroName}>Planning.</Text>
+                    <Text style={S.heroStatus}>
+                      {reminders.length === 0
+                        ? "Nothing planned yet."
+                        : `${reminders.length} item${reminders.length !== 1 ? "s" : ""} planned.`}
+                    </Text>
+                    <View style={S.progressTrack}>
+                      <View
+                        style={[
+                          S.progressFill,
+                          { width: reminders.length > 0 ? "15%" : "0%" },
+                        ]}
+                      />
+                    </View>
+                    <Text style={S.heroMeta}>
+                      Add reminders below to plan your day.
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={S.heroName}>Looking back.</Text>
+                    <Text style={S.heroStatus}>
+                      {done > 0
+                        ? `Completed ${done} of ${total} items.`
+                        : "No activity recorded."}
+                    </Text>
+                    <View style={S.progressTrack}>
+                      <View
+                        style={[
+                          S.progressFill,
+                          {
+                            width: `${Math.round(pct * 100)}%` as any,
+                            opacity: 0.5,
+                          },
+                        ]}
+                      />
+                    </View>
+                    <Text style={S.heroMeta} />
+                  </>
+                )}
+              </View>
+            );
+          })}
+        </Animated.View>
+      </View>
+
+      {/* Fixed bottom: scroll hint */}
       <Ionicons
         name="chevron-down"
         size={13}
@@ -330,6 +422,7 @@ function BlockCard({
   onToggle: () => void;
 }) {
   const router = useRouter();
+  const { removeBlock } = useBlocks();
   const isKanban = block.type === "kanban";
   const done = isKanban
     ? (block as KanbanBlock).tasks.filter((t) => t.column === "done").length
@@ -337,12 +430,19 @@ function BlockCard({
   const total = block.tasks.length;
   const pct = total > 0 ? done / total : 0;
 
+  const handleDelete = () =>
+    Alert.alert("Delete block", `Remove "${block.name}"?`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: () => removeBlock(block.id) },
+    ]);
+
   return (
     <View style={[S.card, isBlockDone(block) && { opacity: 0.35 }]}>
       <TouchableOpacity
         onPress={() =>
           isKanban ? router.push(`/kanban/${block.id}`) : onToggle()
         }
+        onLongPress={handleDelete}
         activeOpacity={0.6}
         style={S.cardRow}
       >
@@ -438,7 +538,6 @@ function AddReminderModal({
           <Pressable style={S.sheet} onPress={(e) => e.stopPropagation()}>
             <View style={S.sheetHandle} />
             <Text style={S.sheetTitle}>Add reminder</Text>
-
             <TextInput
               value={text}
               onChangeText={setText}
@@ -449,7 +548,6 @@ function AddReminderModal({
               returnKeyType="done"
               onSubmitEditing={handleAdd}
             />
-
             <Text style={S.sheetSubLabel}>Priority</Text>
             <View style={{ flexDirection: "row", gap: 8, marginBottom: 20 }}>
               {(["low", "medium", "high"] as Weight[]).map((w) => (
@@ -469,7 +567,6 @@ function AddReminderModal({
                 </TouchableOpacity>
               ))}
             </View>
-
             <TouchableOpacity style={S.addConfirmBtn} onPress={handleAdd}>
               <Text style={S.addConfirmText}>Add</Text>
             </TouchableOpacity>
@@ -489,7 +586,6 @@ export default function HomeScreen() {
   const [activeTab, setActiveTab] = useState<"blocks" | "misc">("blocks");
   const [reminderModal, setReminderModal] = useState(false);
 
-  const selectedDate = calDate;
   const todayStr = new Date().toISOString().split("T")[0];
   const isToday = calDate === todayStr;
 
@@ -505,14 +601,14 @@ export default function HomeScreen() {
     setCalDate(d.toISOString().split("T")[0]);
   };
 
-  // Filter reminders for the selected day
   const dayReminders = useMemo(
-    () => sortReminders(reminders.filter((r) => r.date === selectedDate)),
-    [reminders, selectedDate],
+    () => sortReminders(reminders.filter((r) => r.date === calDate)),
+    [reminders, calDate],
   );
-
   const sortedBlocks = useMemo(() => sortBlocks(blocks), [blocks]);
 
+  // Outer scroll ref — we disable it while hero is being swiped horizontally
+  const outerScrollRef = useRef<any>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
   const [heroH, setHeroH] = useState(SCREEN_HEIGHT);
 
@@ -522,9 +618,15 @@ export default function HomeScreen() {
     extrapolate: "clamp",
   });
 
+  const disableOuterScroll = () =>
+    outerScrollRef.current?.setNativeProps({ scrollEnabled: false });
+  const enableOuterScroll = () =>
+    outerScrollRef.current?.setNativeProps({ scrollEnabled: true });
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }}>
       <Animated.ScrollView
+        ref={outerScrollRef}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 64 }}
         snapToOffsets={[0, heroH]}
@@ -547,6 +649,8 @@ export default function HomeScreen() {
             blocks={isToday ? blocks : []}
             reminders={dayReminders}
             onOpenCalendar={() => router.push("/calendar")}
+            onSwipeStart={disableOuterScroll}
+            onSwipeEnd={enableOuterScroll}
           />
         </Animated.View>
 
@@ -606,7 +710,7 @@ export default function HomeScreen() {
                 style={S.addBtn}
                 onPress={() => router.push("/add-block")}
               >
-                <Ionicons name="add" size={13} color={C.textDim} />
+                <Ionicons name="add" size={13} color="#606060" />
                 <Text style={S.addBtnText}>Add block</Text>
               </TouchableOpacity>
             </>
@@ -629,7 +733,7 @@ export default function HomeScreen() {
                 style={S.addBtn}
                 onPress={() => setReminderModal(true)}
               >
-                <Ionicons name="add" size={13} color={C.textDim} />
+                <Ionicons name="add" size={13} color="#606060" />
                 <Text style={S.addBtnText}>Add reminder</Text>
               </TouchableOpacity>
             </>
@@ -640,7 +744,7 @@ export default function HomeScreen() {
       <AddReminderModal
         visible={reminderModal}
         onClose={() => setReminderModal(false)}
-        dateStr={selectedDate}
+        dateStr={calDate}
       />
     </SafeAreaView>
   );
@@ -649,7 +753,6 @@ export default function HomeScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const S = StyleSheet.create({
-  // Hero
   hero: {
     height: SCREEN_HEIGHT,
     paddingHorizontal: 28,
@@ -670,12 +773,7 @@ const S = StyleSheet.create({
     letterSpacing: 1.5,
     textAlign: "center",
   },
-  dateFormatted: {
-    fontSize: 13,
-    color: C.textSec,
-    textAlign: "center",
-  },
-  heroCenter: { gap: 26 },
+  dateFormatted: { fontSize: 13, color: C.textSec, textAlign: "center" },
   heroName: {
     fontSize: 44,
     fontWeight: "700",
@@ -700,13 +798,7 @@ const S = StyleSheet.create({
   heroMeta: { fontSize: 15, color: C.text, letterSpacing: -0.3 },
   heroMetaDim: { fontSize: 15, color: C.textSec },
 
-  // Section tabs
-  tabRow: {
-    flexDirection: "row",
-    gap: 6,
-    marginBottom: 12,
-    marginTop: 4,
-  },
+  tabRow: { flexDirection: "row", gap: 6, marginBottom: 12, marginTop: 4 },
   tabBtn: {
     paddingHorizontal: 14,
     paddingVertical: 6,
@@ -714,10 +806,7 @@ const S = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.border,
   },
-  tabBtnActive: {
-    backgroundColor: C.text,
-    borderColor: C.text,
-  },
+  tabBtnActive: { backgroundColor: C.text, borderColor: C.text },
   tabBtnText: { fontSize: 12, color: C.textSec, fontWeight: "500" },
   tabBtnTextActive: { color: C.bg, fontWeight: "600" },
   emptySection: {
@@ -727,7 +816,6 @@ const S = StyleSheet.create({
     paddingLeft: 2,
   },
 
-  // Block card
   card: {
     backgroundColor: C.card,
     borderRadius: 12,
@@ -780,7 +868,6 @@ const S = StyleSheet.create({
   taskText: { fontSize: 13, color: C.text, flex: 1 },
   taskDone: { color: C.textDim, textDecorationLine: "line-through" },
 
-  // Reminder card
   reminderCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -795,7 +882,6 @@ const S = StyleSheet.create({
   },
   reminderText: { fontSize: 13, color: C.text, flex: 1 },
 
-  // Add button
   addBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -804,12 +890,12 @@ const S = StyleSheet.create({
     paddingVertical: 11,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: C.border,
+    borderColor: "#2A2A2A",
+    backgroundColor: "#0D0D0D",
     marginBottom: 4,
   },
-  addBtnText: { fontSize: 12, color: C.textDim },
+  addBtnText: { fontSize: 12, color: "#606060" },
 
-  // Modal shared
   overlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.85)",
@@ -845,7 +931,6 @@ const S = StyleSheet.create({
     letterSpacing: 1,
     marginBottom: 8,
   },
-
   reminderInput: {
     backgroundColor: C.card2,
     borderRadius: 10,

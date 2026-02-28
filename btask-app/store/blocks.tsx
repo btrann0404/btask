@@ -179,6 +179,7 @@ type BlocksCtx = {
   calDate: string;
   toggleSimpleTask: (blockId: string, taskId: string) => void;
   moveKanbanTask: (blockId: string, taskId: string, col: KanbanCol) => void;
+  reorderKanbanTask: (blockId: string, taskId: string, toIndex: number) => void;
   addKanbanTask: (blockId: string, title: string, col: KanbanCol) => void;
   addBlock: (preset: BlockPreset) => void;
   removeBlock: (blockId: string) => void;
@@ -240,6 +241,27 @@ export function BlocksProvider({ children }: { children: ReactNode }) {
       }),
     );
   };
+
+  const reorderKanbanTask = (blockId: string, taskId: string, toIndex: number) =>
+    setBlocks((prev) =>
+      prev.map((b) => {
+        if (b.id !== blockId || b.type !== 'kanban') return b;
+        const block = b as KanbanBlock;
+        const task = block.tasks.find((t) => t.id === taskId);
+        if (!task) return b;
+        const col = task.column;
+        const colTasks = block.tasks.filter((t) => t.column === col);
+        const fromIdx = colTasks.findIndex((t) => t.id === taskId);
+        const newColTasks = [...colTasks];
+        newColTasks.splice(fromIdx, 1);
+        newColTasks.splice(toIndex, 0, task);
+        let ci = 0;
+        const result = block.tasks.map((t) =>
+          t.column === col ? newColTasks[ci++] : t,
+        );
+        return { ...b, tasks: result };
+      }),
+    );
 
   const addKanbanTask = (blockId: string, title: string, col: KanbanCol) => {
     const row = db
@@ -377,6 +399,7 @@ export function BlocksProvider({ children }: { children: ReactNode }) {
         calDate,
         toggleSimpleTask,
         moveKanbanTask,
+        reorderKanbanTask,
         addKanbanTask,
         addBlock,
         removeBlock,
